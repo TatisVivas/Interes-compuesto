@@ -13,6 +13,26 @@ import {
 
 type PeriodType = "years" | "months" | "days";
 
+/** Orden de granularidad: el más fino primero */
+const PERIOD_ORDER: Record<PeriodType, number> = { days: 0, months: 1, years: 2 };
+
+function getPeriodsPerYear(type: PeriodType): number {
+  if (type === "days") return 365;
+  if (type === "months") return 12;
+  return 1;
+}
+
+/** Convierte "cada X [unit]" a número de periodos de tipo base. baseType debe ser el más fino. */
+function contributionIntervalInBasePeriods(
+  contribEvery: number,
+  contribType: PeriodType,
+  baseType: PeriodType
+): number {
+  const contribPerYear = getPeriodsPerYear(contribType);
+  const basePerYear = getPeriodsPerYear(baseType);
+  return Math.max(1, Math.round((contribEvery * basePerYear) / contribPerYear));
+}
+
 function formatNumberThousands(value: number): string {
   return new Intl.NumberFormat("es-CO", {
     minimumFractionDigits: 0,
@@ -45,51 +65,108 @@ export default function Home() {
   const [ratePercent, setRatePercent] = useState<string>("10");
   const [periodType, setPeriodType] = useState<PeriodType>("years");
   const [periods, setPeriods] = useState<string>("3");
+  const [contributionAmount, setContributionAmount] = useState<string>("");
+  const [contributionFreqEvery, setContributionFreqEvery] = useState<string>("1");
+  const [contributionFreqType, setContributionFreqType] = useState<PeriodType>("months");
 
-  const { result, tableData, chartData } = useMemo(() => {
+  const { result, tableData, chartData, hasContribution, totalContrib, effectivePeriodLabel, evolutionTitle, effectivePeriodSingular } = useMemo(() => {
     const P = parseNumberFromFormatted(principal) || parseFloat(principal) || 0;
     const rateAnnual = (parseFloat(ratePercent) || 0) / 100;
     const n = Math.floor(parseFloat(periods) || 0);
+    const PMT = parseNumberFromFormatted(contributionAmount) || parseFloat(contributionAmount) || 0;
+    const contribEvery = Math.max(1, Math.floor(parseFloat(contributionFreqEvery) || 1));
+    const hasContribution = PMT > 0;
 
     if (P <= 0 || n <= 0) {
-      return { result: null, tableData: [], chartData: [] };
+      return { result: null, tableData: [], chartData: [], hasContribution: false, totalContrib: 0, effectivePeriodLabel: "", evolutionTitle: "", effectivePeriodSingular: "" };
     }
+
+    let workingType: PeriodType = periodType;
+    if (hasContribution && PERIOD_ORDER[contributionFreqType] < PERIOD_ORDER[periodType]) {
+      workingType = contributionFreqType;
+    }
+    const periodsPerUnit = getPeriodsPerYear(workingType);
+    const totalWorkingPeriods = n * (periodsPerUnit / getPeriodsPerYear(periodType));
+    const nWork = Math.floor(totalWorkingPeriods);
 
     let r: number;
-    if (periodType === "years") {
-      r = rateAnnual;
-    } else if (periodType === "months") {
-      r = rateAnnual / 12;
-    } else {
-      r = rateAnnual / 365;
-    }
+    if (workingType === "years") r = rateAnnual;
+    else if (workingType === "months") r = rateAnnual / 12;
+    else r = rateAnnual / 365;
 
-    const M = P * Math.pow(1 + r, n);
-    const interest = M - P;
-    const result = { M, interest, r, n };
-
+    let M: number;
     const periodLabel =
-      periodType === "years" ? "Año" : periodType === "months" ? "Mes" : "Día";
+      workingType === "years" ? "Año" : workingType === "months" ? "Mes" : "Día";
     const tableData: { period: number; label: string; value: number }[] = [];
     const chartData: { periodo: string; valor: number; intereses: number }[] = [];
 
-    for (let i = 0; i <= n; i++) {
-      const value = P * Math.pow(1 + r, i);
-      const periodInterest = value - P;
-      tableData.push({
-        period: i,
-        label: `${periodLabel} ${i}`,
-        value,
-      });
+    if (!hasContribution) {
+      M = P * Math.pow(1 + r, n);
+      const interest = M - P;
+      const result = { M, interest, r, n };
+      for (let i = 0; i <= n; i++) {
+        const value = P * Math.pow(1 + r, i);
+        const periodInterest = value - P;
+        tableData.push({ period: i, label: `${periodLabel} ${i}`, value });
+        chartData.push({
+          periodo: `${periodLabel} ${i}`,
+          valor: Math.round(value),
+          intereses: Math.round(periodInterest),
+        });
+      }
+      const periodLabelStr =
+      periodType === "years" ? "años" : periodType === "months" ? "meses" : "días";
+    const evolutionTitle =
+      periodType === "years" ? "año a año" : periodType === "months" ? "mes a mes" : "día a día";
+    const effectivePeriodSingular =
+      periodType === "years" ? "Año" : periodType === "months" ? "Mes" : "Día";
+    return { result, tableData, chartData, hasContribution: false, totalContrib: 0, effectivePeriodLabel: periodLabelStr, evolutionTitle, effectivePeriodSingular };
+    }
+
+    const contribInterval = contributionIntervalInBasePeriods(
+      contribEvery,
+      contributionFreqType,
+      workingType
+    );
+    let balance = P;
+    const balances: number[] = [P];
+    for (let i = 0; i < nWork; i++) {
+      balance = balance * (1 + r);
+      if ((i + 1) % contribInterval === 0) balance += PMT;
+      balances.push(balance);
+    }
+    M = balance;
+    const totalContrib = PMT * Math.floor(nWork / contribInterval);
+    const interest = M - P - totalContrib;
+    const result = { M, interest, r, n: nWork };
+
+    for (let i = 0; i < balances.length; i++) {
+      const value = balances[i];
+      const periodInterest =
+        i === 0 ? 0 : balances[i - 1] * r;
+      tableData.push({ period: i, label: `${periodLabel} ${i}`, value });
       chartData.push({
         periodo: `${periodLabel} ${i}`,
         valor: Math.round(value),
         intereses: Math.round(periodInterest),
       });
     }
-
-    return { result, tableData, chartData };
-  }, [principal, ratePercent, periodType, periods]);
+    const periodLabelStr =
+      workingType === "years" ? "años" : workingType === "months" ? "meses" : "días";
+    const evolutionTitle =
+      workingType === "years" ? "año a año" : workingType === "months" ? "mes a mes" : "día a día";
+    const effectivePeriodSingular =
+      workingType === "years" ? "Año" : workingType === "months" ? "Mes" : "Día";
+    return { result, tableData, chartData, hasContribution: true, totalContrib, effectivePeriodLabel: periodLabelStr, evolutionTitle, effectivePeriodSingular };
+  }, [
+    principal,
+    ratePercent,
+    periodType,
+    periods,
+    contributionAmount,
+    contributionFreqEvery,
+    contributionFreqType,
+  ]);
 
   const handlePrincipalChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const raw = e.target.value.replace(/[^\d]/g, "");
@@ -98,6 +175,11 @@ export default function Home() {
 
   const handlePrincipalBlur = () => {
     if (principal === "" || principal === "0") setPrincipal("0");
+  };
+
+  const handleContributionChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value.replace(/[^\d]/g, "");
+    setContributionAmount(raw === "" ? "" : raw);
   };
 
   return (
@@ -219,6 +301,94 @@ export default function Home() {
                 </p>
               )}
             </div>
+
+            <div className="rounded-xl border border-slate-600/50 bg-slate-900/40 p-4">
+              <p className="mb-3 text-sm font-medium text-slate-300">
+                Abono periódico <span className="text-slate-500">(opcional)</span>
+              </p>
+              <p className="mb-3 text-xs text-slate-500">
+                Ej.: inversión inicial 1.000.000 y cada mes agrego 100.000
+              </p>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label
+                    htmlFor="contribution"
+                    className="mb-1.5 block text-xs font-medium text-slate-400"
+                  >
+                    Monto del abono
+                  </label>
+                  <input
+                    id="contribution"
+                    type="text"
+                    inputMode="numeric"
+                    value={contributionAmount === "" ? "" : formatNumberThousands(parseNumberFromFormatted(contributionAmount) || 0)}
+                    onChange={handleContributionChange}
+                    placeholder="Ej: 100000"
+                    className="w-full rounded-lg border border-slate-600 bg-slate-900/60 px-4 py-2.5 text-sm text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+                  />
+                </div>
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="flex-1 min-w-[80px]">
+                    <label
+                      htmlFor="contributionFreq"
+                      className="mb-1.5 block text-xs font-medium text-slate-400"
+                    >
+                      Cada
+                    </label>
+                    <input
+                      id="contributionFreq"
+                      type="number"
+                      min="1"
+                      value={contributionFreqEvery}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                        setContributionFreqEvery(e.target.value || "1")
+                      }
+                      className="w-full rounded-lg border border-slate-600 bg-slate-900/60 px-4 py-2.5 text-sm text-white focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+                    />
+                  </div>
+                  <div className="flex-1 min-w-[100px]">
+                    <span className="mb-1.5 block text-xs font-medium text-slate-400">
+                      Unidad
+                    </span>
+                    <div className="flex gap-1 rounded-lg border border-slate-600 bg-slate-900/60 p-1">
+                      <button
+                        type="button"
+                        onClick={() => setContributionFreqType("days")}
+                        className={`flex-1 rounded py-2 text-xs font-medium transition-colors ${
+                          contributionFreqType === "days"
+                            ? "bg-emerald-600 text-white"
+                            : "text-slate-400 hover:bg-slate-700/50 hover:text-slate-200"
+                        }`}
+                      >
+                        Días
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setContributionFreqType("months")}
+                        className={`flex-1 rounded py-2 text-xs font-medium transition-colors ${
+                          contributionFreqType === "months"
+                            ? "bg-emerald-600 text-white"
+                            : "text-slate-400 hover:bg-slate-700/50 hover:text-slate-200"
+                        }`}
+                      >
+                        Meses
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setContributionFreqType("years")}
+                        className={`flex-1 rounded py-2 text-xs font-medium transition-colors ${
+                          contributionFreqType === "years"
+                            ? "bg-emerald-600 text-white"
+                            : "text-slate-400 hover:bg-slate-700/50 hover:text-slate-200"
+                        }`}
+                      >
+                        Años
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
           {result && (
@@ -239,10 +409,28 @@ export default function Home() {
                     {formatCurrency(result.interest)}
                   </span>
                 </div>
+                {hasContribution && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-400">Total abonado</span>
+                    <span className="font-medium text-amber-400">
+                      {formatCurrency(totalContrib)}
+                    </span>
+                  </div>
+                )}
                 <p className="mt-3 border-t border-slate-700 pt-3 text-xs text-slate-500">
-                  Fórmula: M = P(1 + r)^n — r ={" "}
-                  {(result.r * 100).toFixed(4)}% por periodo, n = {result.n}{" "}
-                  {periodType === "years" ? "años" : periodType === "months" ? "meses" : "días"}
+                  {hasContribution
+                    ? "M = capital inicial(1+r)^n + abonos con interés compuesto. r = " +
+                      (result.r * 100).toFixed(4) +
+                      "% por periodo, n = " +
+                      result.n +
+                      " " +
+                      effectivePeriodLabel
+                    : "Fórmula: M = P(1 + r)^n — r = " +
+                      (result.r * 100).toFixed(4) +
+                      "% por periodo, n = " +
+                      result.n +
+                      " " +
+                      effectivePeriodLabel}
                 </p>
               </div>
             </div>
@@ -252,19 +440,14 @@ export default function Home() {
         {tableData.length > 0 && (
           <section className="mt-8 rounded-2xl border border-slate-700/50 bg-slate-800/40 p-6 shadow-xl backdrop-blur sm:p-8">
             <h2 className="mb-4 text-lg font-semibold text-white">
-              Evolución{" "}
-              {periodType === "years"
-                ? "año a año"
-                : periodType === "months"
-                  ? "mes a mes"
-                  : "día a día"}
+              Evolución {evolutionTitle}
             </h2>
             <div className="overflow-x-auto rounded-xl border border-slate-600/50">
               <table className="w-full min-w-[280px] text-left text-sm">
                 <thead>
                   <tr className="border-b border-slate-600 bg-slate-900/80">
                     <th className="px-4 py-3 font-medium text-slate-300">
-                      {periodType === "years" ? "Año" : periodType === "months" ? "Mes" : "Día"}
+                      {effectivePeriodSingular || (periodType === "years" ? "Año" : periodType === "months" ? "Mes" : "Día")}
                     </th>
                     <th className="px-4 py-3 font-medium text-slate-300 text-right">
                       Valor acumulado
@@ -358,6 +541,11 @@ export default function Home() {
             <li>
               A mayor frecuencia de capitalización (diario &gt; mensual &gt; anual), el capital crece
               más rápido con la misma tasa nominal.
+            </li>
+            <li>
+              <strong>Abono periódico (opcional):</strong> puedes agregar un monto fijo cada X días,
+              meses o años (ej.: 100.000 cada 1 mes). El monto final incluye capital inicial +
+              intereses + total abonado con sus intereses.
             </li>
           </ul>
         </div>
