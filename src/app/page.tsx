@@ -361,6 +361,10 @@ export default function Home() {
             </li>
           </ul>
         </div>
+
+        <footer className="mt-12 pb-8 text-center text-sm text-slate-500">
+          Derechos © Tatis Vivas
+        </footer>
       </main>
     </div>
   );
